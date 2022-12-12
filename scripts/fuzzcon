@@ -1,0 +1,93 @@
+#!/usr/bin/python
+
+import os
+import sys
+import time
+import errno
+import random
+import signal
+import subprocess
+
+from container import Container
+
+
+class Task(object):
+  def __init__(self):
+    self.pid = None
+
+  def launch_test(self, container):
+    pid = os.fork()
+    if pid == 0:
+      # child
+      container.swallow_pid(os.getpid())
+      self.exec_test()
+      # doesn't return
+    else:
+      self.pid = pid
+    return pid
+
+  def exec_test(self):
+    # FIXME ctalbott - magic number could be gotten by size of device
+    ## blocknum = random.randint(0, 2879)
+    ## print 'seeking to %d' % blocknum
+    ## os.execlp('dd', 'dd', 'if=/dev/sda', 'of=/dev/null', 'bs=256K',
+    ##           'skip=%d' % blocknum, 'count=100')
+    blocknum = random.randint(0, 1800000)
+    print 'seeking to %d' % blocknum
+    os.execlp('dd', 'dd', 'if=/dev/zero', 'of=/data/bigfile', 'bs=256K',
+              'seek=%d' % blocknum, 'count=2000', 'conv=notrunc', 'oflag=direct')
+
+  def wait(self):
+    pid = self.pid
+    while 1:
+      wpid, sts = os.waitpid(pid, 0)
+      if os.WIFSTOPPED(sts):
+        continue
+      elif os.WIFSIGNALED(sts):
+        print >>sys.stderr, 'child %d received %d' % (pid, os.WTERMSIG(sts))
+        return -os.WTERMSIG(sts)
+      elif os.WIFEXITED(sts):
+        return os.WEXITSTATUS(sts)
+      else:
+        raise error, "Not stopped, signaled or exited???"
+
+  def kill(self, sig):
+    os.kill(self.pid, sig)
+
+
+def main(args):
+  name = 'fuzzcon_%x' % random.getrandbits(4*32)
+  root = Container('', True)
+  rootmems = root.get_mems()
+
+  container = Container(name, True)
+  container.create()
+  try:
+    container.set_mems(rootmems)
+    container.set_cpus([])
+    print 'set first service level'
+    container.set_io_service_level('sda', 2, 100)
+    container.set_io_service_level('sdb', 2, 100)
+    task = Task()
+    try:
+      print 'launch test'
+      task.launch_test(container)
+      time.sleep(2)
+      print 'set second service level'
+      container.set_io_service_level('sda', 2, 200)
+      container.set_io_service_level('sdb', 2, 200)
+      time.sleep(2)
+    finally:
+      task.kill(signal.SIGTERM)
+      print 'waiting'
+      print task.wait()
+      print 'done waiting'
+  finally:
+    # should blow up here
+    print 'removing container'
+    container.delete()
+
+
+
+if __name__ == '__main__':
+  main(sys.argv)
